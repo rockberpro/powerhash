@@ -1,41 +1,46 @@
-# Verification / Audit Logic
-$manifest = Read-Host "Path to manifest for verification"
-if (-not (Test-Path $manifest)) { Write-Warning "Manifest not found."; return }
+param ([String]$Algorithm)
 
-$lines = Get-Content $manifest | Where-Object { $_ -match '^[A-F0-9]{64}\s+.+$' }
-$results = [System.Collections.Generic.List[PSObject]]::new()
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$manifest = Read-Host "Select manifest file to verify"
+if (-not (Test-Path $manifest)) { return }
 
-$index = 0
-foreach ($line in $lines) {
-    $index++
-    if ($line -match '^([A-F0-9]{64})\s+(.+)$') {
-        $storedHash = $matches[1]
-        $filePath   = $matches[2].Trim()
-
-        Write-Progress -Activity "PowerHash: Verifying Integrity" -Status "Checking $index/$($lines.Count)" -PercentComplete (($index/$lines.Count)*100)
-
-        $status = "MATCH"
-        if (-not (Test-Path $filePath)) {
-            $status = "MISSING"
-        } else {
-            $currentHash = (Get-FileHash $filePath -Algorithm SHA256).Hash
-            if ($currentHash -ne $storedHash) { $status = "MISMATCH" }
+if (-not $Algorithm) {
+    # Detect algorithm based on the character count of the first hash found
+    $firstLine = Get-Content $manifest | Select-Object -First 1
+    if ($firstLine -match '^([A-F0-9]+)\s+') {
+        $len = $matches[1].Length
+        $Algorithm = switch ($len) {
+            32  { "MD5" }
+            40  { "SHA1" }
+            64  { "SHA256" }
+            96  { "SHA384" }
+            128 { "SHA512" }
+            Default { "SHA256" }
         }
-        $results.Add([PSCustomObject]@{ Status = $status; File = (Split-Path $filePath -Leaf); Path = $filePath })
+        Write-Host "Auto-detected $Algorithm based on manifest hash length." -ForegroundColor Gray
+    } else {
+        $Algorithm = "SHA256"
     }
 }
-$sw.Stop()
+
+$lines = Get-Content $manifest | Where-Object { $_ -match '^[A-F0-9]+\s+.+$' }
+$results = New-Object System.Collections.Generic.List[PSObject]
+
+foreach ($line in $lines) {
+    if ($line -match '^([A-F0-9]+)\s+(.+)$') {
+        $storedHash = $matches[1]
+        $filePath   = $matches[2].Trim()
+        
+        $status = "MATCH"
+        if (-not (Test-Path $filePath)) { $status = "MISSING" }
+        else {
+            $currentHash = (Get-FileHash $filePath -Algorithm $Algorithm).Hash
+            if ($currentHash -ne $storedHash) { $status = "MISMATCH" }
+        }
+        $results.Add([PSCustomObject]@{Status=$status; File=(Split-Path $filePath -Leaf); Path=$filePath})
+    }
+}
 
 Clear-Host
-Write-Host "--- PowerHash Audit Results ---`n" -ForegroundColor Cyan
+Write-Host "--- Audit Report ($Algorithm) ---" -ForegroundColor Cyan
 $results | Group-Object Status | Select-Object Count, Name | Format-Table -AutoSize
-
-$failures = $results | Where-Object { $_.Status -ne "MATCH" }
-if ($failures) {
-    Write-Host "INTEGRITY FAILURES FOUND:" -ForegroundColor Red
-    $failures | Sort-Object Status | Format-Table Status, File, Path -AutoSize
-} else {
-    Write-Host "Integrity Verified: All files match the manifest." -ForegroundColor Green
-}
-Write-Host "`nTime elapsed: $($sw.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Yellow
+$results | Where-Object { $_.Status -ne "MATCH" } | Format-Table Status, File, Path -AutoSize
