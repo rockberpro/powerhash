@@ -15,7 +15,7 @@ Move all the project files to a permanent location. Avoid using temporary folder
 - `PowerHash.ps1` (Controller)
 - `PowerHash-Checksum.ps1` (Worker)
 - `PowerHash-Verify.ps1` (Worker)
-- `PowerHash.bat` (CLI Shim)
+- `powerhash.cmd` (CLI Shim)
 
 ---
 
