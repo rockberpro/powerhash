@@ -1,19 +1,15 @@
-param ([String]$Algorithm)
-
-if (-not $Algorithm) { $Algorithm = "SHA256" }
+param ([String]$Algorithm = "SHA256")
 
 $source = Read-Host "Input Source Folder"
 if (-not (Test-Path -LiteralPath $source)) { Write-Warning "Invalid path."; return }
 $destination = Read-Host "Manifest Path"
-
 $absDest = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($destination)
 
-# 1. Load existing hashes into memory (Normalized paths for comparison)
+# 1. Load existing hashes into memory
 $registeredPaths = @{}
 if (Test-Path -LiteralPath $absDest) {
     Write-Host "Reading existing manifest..." -ForegroundColor Gray
     Get-Content -LiteralPath $absDest | ForEach-Object {
-        # This regex captures the hash and the path, handling the CertUtil space format
         if ($_ -match '^[A-F0-9]+\s+(.+)$') {
             $pathInFile = $matches[1].Trim()
             $registeredPaths[$pathInFile] = $true
@@ -21,42 +17,38 @@ if (Test-Path -LiteralPath $absDest) {
     }
 }
 
-# 2. Scan the folder
+# 2. Scan and Filter (The "Smart" way)
 Write-Host "Analyzing folder structure..." -ForegroundColor Gray
 $allFiles = Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object {
     $_.FullName -ne $absDest -and $_.Extension -ne ".sha256"
 }
 
-$totalCount = $allFiles.Count
+# Split the work: What's already there vs. what's actually new
+$newFiles = $allFiles | Where-Object { -not $registeredPaths.ContainsKey($_.FullName) }
+$skippedCount = $allFiles.Count - $newFiles.Count
 $newCount = 0
-$skippedCount = 0
 
-# 3. The Incremental Loop
-for ($i = 0; $i -lt $totalCount; $i++) {
-    $currentFile = $allFiles[$i]
-    $percent = [int](($i / $totalCount) * 100)
+# 3. The Incremental Loop (Only iterates over NEW files)
+if ($newFiles.Count -eq 0) {
+    Write-Host "No new files found. Everything is up to date." -ForegroundColor Green
+} else {
+    for ($i = 0; $i -lt $newFiles.Count; $i++) {
+        $currentFile = $newFiles[$i]
+        $percent = [int](($i / $newFiles.Count) * 100)
 
-    # UI: Overall Progress
-    Write-Progress -Activity "Incremental Hash ($Algorithm)" `
-                   -Status "Checking: $($currentFile.Name)" `
-                   -PercentComplete $percent `
-                   -CurrentOperation "New: $newCount | Existing: $skippedCount"
+        Write-Progress -Activity "Incremental Hash ($Algorithm)" `
+                       -Status "File $($i+1) of $($newFiles.Count) ($percent%)" `
+                       -PercentComplete $percent `
+                       -CurrentOperation "Hashing: $($currentFile.Name)"
 
-    # CRITICAL CHECK: Only hash if the path is NOT already in our database
-    if ($registeredPaths.ContainsKey($currentFile.FullName)) {
-        $skippedCount++
-        continue
-    }
-
-    try {
-        $hash = (Get-FileHash -LiteralPath $currentFile.FullName -Algorithm $Algorithm).Hash
-        # ONLY appends if the file was not found in the manifest
-        "$hash  $($currentFile.FullName)" | Out-File -LiteralPath $absDest -Append -Encoding utf8
-        $newCount++
-        # Add to memory so we don't double-count if the script hits the same path twice
-        $registeredPaths[$currentFile.FullName] = $true
-    } catch {
-        Write-Warning "Access Denied or Path too long: $($currentFile.FullName)"
+        try {
+            $hash = (Get-FileHash -LiteralPath $currentFile.FullName -Algorithm $Algorithm).Hash
+            "$hash  $($currentFile.FullName)" | Out-File -LiteralPath $absDest -Append -Encoding utf8
+            $newCount++
+            $registeredPaths[$currentFile.FullName] = $true
+        } catch {
+            Write-Warning "Access Denied or Path too long: $($currentFile.FullName)"
+        }
     }
 }
 

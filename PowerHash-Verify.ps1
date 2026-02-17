@@ -1,41 +1,55 @@
 param ([String]$Algorithm)
+if (-not $Algorithm) { $Algorithm = "SHA256" }
 
-$manifest = Read-Host "Select manifest file"
-if (-not (Test-Path -LiteralPath $manifest)) { return }
+$manifest = Read-Host "Path to .sha256 manifest"
+if (-not (Test-Path -LiteralPath $manifest)) { Write-Warning "Manifest not found."; return }
 
-if (-not $Algorithm) {
-    $firstLine = Get-Content -LiteralPath $manifest | Select-Object -First 1
-    if ($firstLine -match '^([A-F0-9]+)\s+') {
-        $len = $matches[1].Length
-        $Algorithm = switch ($len) {
-            32 {"MD5"}; 40 {"SHA1"}; 64 {"SHA256"}; 96 {"SHA384"}; 128 {"SHA512"}; Default {"SHA256"}
-        }
-        Write-Host "Auto-detected Algorithm: $Algorithm" -ForegroundColor Gray
-    } else { $Algorithm = "SHA256" }
-}
+# Load manifest lines
+$lines = Get-Content -LiteralPath $manifest
+$total = $lines.Count
+$passed = 0
+$failed = 0
+$missing = 0
 
-$lines = Get-Content -LiteralPath $manifest | Where-Object { $_ -match '^[A-F0-9]+\s+.+$' }
-$results = New-Object System.Collections.Generic.List[PSObject]
+Write-Host "Starting Audit of $total files..." -ForegroundColor Cyan
 
-foreach ($line in $lines) {
+for ($i = 0; $i -lt $total; $i++) {
+    $line = $lines[$i]
+    # Split hash and path (handles the double-space format)
     if ($line -match '^([A-F0-9]+)\s+(.+)$') {
-        $storedHash = $matches[1]
-        $filePath   = $matches[2].Trim()
+        $expectedHash = $matches[1]
+        $filePath = $matches[2].Trim()
 
-        $status = "MATCH"
-        if (-not (Test-Path -LiteralPath $filePath)) { $status = "MISSING" }
-        else {
+        $percent = [int](($i / $total) * 100)
+
+        # UI: Progress Bar
+        Write-Progress -Activity "Verifying Integrity ($Algorithm)" `
+                       -Status "File $($i+1) of $total ($percent%)" `
+                       -PercentComplete $percent `
+                       -CurrentOperation "Checking: $(Split-Path $filePath -Leaf)"
+
+        if (Test-Path -LiteralPath $filePath) {
             try {
-                # FIXED: LiteralPath for special characters
-                $currentHash = (Get-FileHash -LiteralPath $filePath -Algorithm $Algorithm).Hash
-                if ($currentHash -ne $storedHash) { $status = "MISMATCH" }
-            } catch { $status = "ERROR" }
+                $actualHash = (Get-FileHash -LiteralPath $filePath -Algorithm $Algorithm).Hash
+                if ($actualHash -eq $expectedHash) {
+                    $passed++
+                } else {
+                    Write-Host "[MISMATCH] $filePath" -ForegroundColor Red
+                    $failed++
+                }
+            } catch {
+                Write-Host "[ERROR] Could not read $filePath" -ForegroundColor Yellow
+                $failed++
+            }
+        } else {
+            Write-Host "[MISSING] $filePath" -ForegroundColor Gray
+            $missing++
         }
-        $results.Add([PSCustomObject]@{Status=$status; File=(Split-Path $filePath -Leaf); Path=$filePath})
     }
 }
 
-Clear-Host
-Write-Host "--- Audit Report ($Algorithm) ---" -ForegroundColor Cyan
-$results | Group-Object Status | Select-Object Count, Name | Format-Table -AutoSize
-$results | Where-Object { $_.Status -ne "MATCH" } | Format-Table Status, File, Path -AutoSize
+# Final Report
+Write-Host "`n--- Audit Results ---" -ForegroundColor Cyan
+Write-Host "Verified: $passed" -ForegroundColor Green
+if ($failed -gt 0) { Write-Host "Corrupted: $failed" -ForegroundColor Red }
+if ($missing -gt 0) { Write-Host "Missing:  $missing" -ForegroundColor Yellow }
